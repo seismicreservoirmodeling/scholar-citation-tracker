@@ -1,0 +1,42 @@
+name: Daily citation snapshot
+
+on:
+  schedule:
+    - cron: "17 14 * * *"   # every day at 14:17 UTC (6:17 am Pacific)
+  workflow_dispatch:         # adds a "Run workflow" button for manual runs
+
+permissions:
+  contents: write            # lets the workflow commit citations.csv
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch citations from Google Scholar
+        run: python collector.py
+
+      - name: Commit updated history
+        run: |
+          git config user.name "citation-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add citations.csv
+          if git diff --staged --quiet; then
+            echo "No change to commit."
+          else
+            git commit -m "Citation snapshot $(date -u +%Y-%m-%d)"
+            git push
+          fi
