@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scholar Citation Tracker</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --surface-1: #ffffff;
+    --text-primary: #191919;
+    --text-secondary: #666666;
+    --rule: #e4e4e0;
+    --grid: #efefec;
+    --series-1: #257de0;
+    --critical: #dc3c3d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111111;
+      --surface-1: #191919;
+      --text-primary: #efefef;
+      --text-secondary: #9c9c9c;
+      --rule: #2e2e2e;
+      --grid: #262626;
+      --series-1: #338ced;
+      --critical: #eb6263;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text-primary);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 20px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; margin-bottom: 24px; }
+  h1 { font-size: 24px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+  .sub { color: var(--text-secondary); font-size: 13px; }
+  a { color: var(--series-1); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .tile, .card { background: var(--surface-1); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px; }
+  .tile .label { color: var(--text-secondary); font-size: 13px; }
+  .tile .value { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .value.pending { font-size: 18px; font-weight: 500; color: var(--text-secondary); padding: 8px 0 5px; }
+  .tile .note { color: var(--text-secondary); font-size: 12.5px; margin-top: 2px; }
+  .card { margin-top: 12px; }
+  .chart-wrap { position: relative; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  svg text { fill: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .tooltip {
+    position: absolute; pointer-events: none; background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--rule); border-radius: 8px; padding: 6px 10px; font-size: 13px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.12); white-space: nowrap; display: none; font-variant-numeric: tabular-nums;
+  }
+  .tooltip b { font-weight: 650; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-secondary); font-weight: 500; }
+  .row-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .msg { background: var(--surface-1); border: 1px solid var(--rule); border-radius: 12px; padding: 20px; }
+  .msg.error { border-color: var(--critical); }
+  footer { color: var(--text-secondary); font-size: 12.5px; margin-top: 24px; max-width: 720px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Scholar Citation Tracker</h1>
+      <div class="sub" id="who">Dario Grana · <a id="profile" href="#">Google Scholar profile</a></div>
+    </div>
+    <div class="sub" id="updated"></div>
+  </header>
+
+  <div id="content"><div class="msg">Loading citation history…</div></div>
+
+  <footer>
+    The daily average for the year uses Google Scholar's citation count for the current calendar year divided by
+    the days elapsed up to the latest snapshot. The 30- and 90-day averages use the change in total citations
+    between saved daily snapshots, divided by the actual days between them, so they only appear once that much
+    history has been collected. Google Scholar has no official API; a missed day just widens the interval.
+  </footer>
+</main>
+
+<script>
+// ---- Settings -------------------------------------------------------------
+const PROFILE_ID = "U10cIV8AAAAJ";
+const BRANCH = "main";
+// ---------------------------------------------------------------------------
+
+document.getElementById("profile").href =
+  `https://scholar.google.com/citations?user=${PROFILE_ID}&hl=en`;
+
+const DAY = 86400000;
+const fmt = new Intl.NumberFormat("en-US");
+const parseDay = s => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+const fmtDate = t => new Date(t).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+const fmtShort = t => new Date(t).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
+
+// On GitHub Pages, read the CSV straight from the repository so new snapshots
+// show up without waiting for Pages to rebuild. Fall back to the local copy.
+function csvUrls() {
+  const urls = [];
+  const host = location.hostname;
+  if (host.endsWith(".github.io")) {
+    const owner = host.split(".")[0];
+    const first = location.pathname.split("/").filter(Boolean)[0];
+    const repo = first && !first.includes(".") ? first : `${owner}.github.io`;
+    urls.push(`https://raw.githubusercontent.com/${owner}/${repo}/${BRANCH}/citations.csv`);
+  }
+  urls.push("citations.csv");
+  return urls;
+}
+
+async function loadCsv() {
+  let lastErr;
+  for (const url of csvUrls()) {
+    try {
+      const res = await fetch(`${url}?t=${Date.now()}`, { cache: "no-store" });
+      if (res.status === 404) { lastErr = new Error("not-found"); continue; }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { text: await res.text(), url };
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+function parseRows(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const head = lines.shift().split(",");
+  const idx = k => head.indexOf(k);
+  return lines.filter(Boolean).map(line => {
+    const c = line.split(",");
+    return {
+      date: c[idx("date")],
+      t: parseDay(c[idx("date")]),
+      total: Number(c[idx("total_citations")]),
+      year: Number(c[idx("year_citations")]),
+    };
+  }).filter(r => Number.isFinite(r.total)).sort((a, b) => a.t - b.t);
+}
+
+// Rate between the latest snapshot and the latest one at least `days` earlier.
+function averageSince(rows, days) {
+  const latest = rows[rows.length - 1];
+  const cutoff = latest.t - days * DAY;
+  let base = null;
+  for (const r of rows) if (r.t <= cutoff) base = r;
+  if (!base) return null;
+  const elapsed = Math.round((latest.t - base.t) / DAY);
+  const gained = latest.total - base.total;
+  return { rate: gained / elapsed, gained, elapsed };
+}
+
+const tile = (label, value, note = "", pending = false) => `
+  <div class="tile">
+    <div class="label">${label}</div>
+    <div class="value${pending ? " pending" : ""}">${value}</div>
+    ${note ? `<div class="note">${note}</div>` : ""}
+  </div>`;
+
+function render(rows, csvUrl) {
+  const latest = rows[rows.length - 1];
+  const first = rows[0];
+  const y = new Date(latest.t).getUTCFullYear();
+  const dayOfYear = Math.round((latest.t - Date.UTC(y, 0, 1)) / DAY) + 1;
+  const historyDays = Math.round((latest.t - first.t) / DAY);
+  const a30 = averageSince(rows, 30);
+  const a90 = averageSince(rows, 90);
+
+  const staleDays = Math.floor((Date.now() - latest.t) / DAY);
+  document.getElementById("updated").innerHTML =
+    `Latest snapshot: ${fmtDate(latest.t)}` +
+    (staleDays > 2 ? ` · <span style="color:var(--critical)">no new data for ${staleDays} days — check the Actions tab</span>` : "");
+
+  let prelim = "";
+  if (!a90 && rows.length >= 2 && historyDays > 0) {
+    prelim = `Preliminary: ${((latest.total - first.total) / historyDays).toFixed(2)}/day over the ${historyDays} days so far`;
+  }
+
+  const tiles = [
+    tile("Total citations", fmt.format(latest.total)),
+    tile(`${y} citations`, fmt.format(latest.year), `${dayOfYear} days into the year`),
+    tile(`Daily average · ${y}`, (latest.year / dayOfYear).toFixed(2), "citations per day this year"),
+    a90
+      ? tile("Daily average · last 90 days", a90.rate.toFixed(2), `${a90.gained >= 0 ? "+" : ""}${fmt.format(a90.gained)} over ${a90.elapsed} days`)
+      : tile("Daily average · last 90 days", `Collecting data · day ${historyDays + 1} of 90`, prelim, true),
+    a30
+      ? tile("Daily average · last 30 days", a30.rate.toFixed(2), `${a30.gained >= 0 ? "+" : ""}${fmt.format(a30.gained)} over ${a30.elapsed} days`)
+      : tile("Daily average · last 30 days", `Collecting data · day ${historyDays + 1} of 30`, "", true),
+  ];
+
+  const recent = rows.slice().reverse();
+  const tableRows = recent.map((r, i) => {
+    const prev = recent[i + 1];
+    const change = prev ? r.total - prev.total : null;
+    return `<tr><td>${fmtDate(r.t)}</td><td>${fmt.format(r.total)}</td>
+      <td>${change === null ? "—" : (change >= 0 ? "+" : "") + fmt.format(change)}</td>
+      <td>${fmt.format(r.year)}</td></tr>`;
+  }).join("");
+
+  document.getElementById("content").innerHTML = `
+    <div class="tiles">${tiles.join("")}</div>
+    <div class="card">
+      <h2>Total citations over time</h2>
+      <div class="chart-wrap" id="chart"></div>
+    </div>
+    <div class="card">
+      <div class="row-head">
+        <h2>Recorded days (${rows.length})</h2>
+        <a href="${csvUrl}" download="citation_history.csv">Download CSV</a>
+      </div>
+      <div style="max-height:360px;overflow:auto">
+        <table>
+          <thead><tr><th>Date</th><th>Total citations</th><th>Change</th><th>Citations in year</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  drawChart(document.getElementById("chart"), rows);
+}
+
+function niceTicks(min, max, count = 5) {
+  if (min === max) { min -= 5; max += 5; }
+  const raw = (max - min) / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw);
+  const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step;
+  const ticks = [];
+  for (let v = lo; v <= hi + step / 2; v += step) ticks.push(v);
+  return ticks;
+}
+
+function drawChart(el, rows) {
+  const W = 900, H = 300, m = { t: 12, r: 16, b: 30, l: 56 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const t0 = rows[0].t, t1 = rows[rows.length - 1].t;
+  const span = Math.max(t1 - t0, DAY);
+  const ticks = niceTicks(Math.min(...rows.map(r => r.total)), Math.max(...rows.map(r => r.total)));
+  const y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  const x = t => m.l + (rows.length === 1 ? iw / 2 : ((t - t0) / span) * iw);
+  const y = v => m.t + ih - ((v - y0) / (y1 - y0)) * ih;
+
+  const grid = ticks.map(v => `
+    <line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-width="1"/>
+    <text x="${m.l - 8}" y="${y(v) + 4}" text-anchor="end">${fmt.format(v)}</text>`).join("");
+
+  const nX = Math.min(6, rows.length);
+  const xLabels = Array.from({ length: nX }, (_, i) => {
+    const t = nX === 1 ? t0 : t0 + (span * i) / (nX - 1);
+    const anchor = nX === 1 ? "middle" : i === 0 ? "start" : i === nX - 1 ? "end" : "middle";
+    return `<text x="${x(t)}" y="${H - 8}" text-anchor="${anchor}">${fmtShort(t)}</text>`;
+  }).join("");
+
+  const path = rows.map((r, i) => `${i ? "L" : "M"}${x(r.t).toFixed(1)},${y(r.total).toFixed(1)}`).join("");
+  const showDots = rows.length <= 40;
+  const dots = showDots ? rows.map(r =>
+    `<circle cx="${x(r.t)}" cy="${y(r.total)}" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"/>`).join("") : "";
+
+  el.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Line chart of total citations over time">
+      ${grid}
+      <line x1="${m.l}" x2="${W - m.r}" y1="${m.t + ih}" y2="${m.t + ih}" stroke="var(--text-secondary)" stroke-opacity=".5"/>
+      ${xLabels}
+      <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${dots}
+      <line id="xhair" y1="${m.t}" y2="${m.t + ih}" stroke="var(--text-secondary)" stroke-opacity=".6" stroke-dasharray="3 3" style="display:none"/>
+      <circle id="hdot" r="5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" style="display:none"/>
+      <rect x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent" id="hit"/>
+    </svg>
+    <div class="tooltip" id="tip"></div>`;
+
+  const svg = el.querySelector("svg"), tip = el.querySelector("#tip");
+  const xh = el.querySelector("#xhair"), hd = el.querySelector("#hdot");
+  const hide = () => { tip.style.display = xh.style.display = hd.style.display = "none"; };
+  svg.addEventListener("pointermove", ev => {
+    const box = svg.getBoundingClientRect();
+    const sx = ((ev.clientX - box.left) / box.width) * W;
+    let best = rows[0];
+    for (const r of rows) if (Math.abs(x(r.t) - sx) < Math.abs(x(best.t) - sx)) best = r;
+    const i = rows.indexOf(best), prev = rows[i - 1];
+    const px = x(best.t), py = y(best.total);
+    xh.setAttribute("x1", px); xh.setAttribute("x2", px); xh.style.display = "";
+    hd.setAttribute("cx", px); hd.setAttribute("cy", py); hd.style.display = "";
+    tip.innerHTML = `${fmtDate(best.t)}<br><b>${fmt.format(best.total)}</b> citations` +
+      (prev ? ` <span class="sub">(${best.total - prev.total >= 0 ? "+" : ""}${best.total - prev.total})</span>` : "");
+    tip.style.display = "block";
+    const scale = box.width / W;
+    let left = px * scale + 12;
+    if (left + tip.offsetWidth > box.width) left = px * scale - tip.offsetWidth - 12;
+    tip.style.left = `${left}px`;
+    tip.style.top = `${Math.max(0, py * scale - tip.offsetHeight - 10)}px`;
+  });
+  svg.addEventListener("pointerleave", hide);
+}
+
+loadCsv()
+  .then(({ text, url }) => {
+    const rows = parseRows(text);
+    if (!rows.length) throw new Error("not-found");
+    render(rows, url);
+  })
+  .catch(err => {
+    const el = document.getElementById("content");
+    if (err && err.message === "not-found") {
+      el.innerHTML = `<div class="msg">No citation history yet. In your GitHub repository, open the
+        <b>Actions</b> tab, choose <b>Daily citation snapshot</b>, and click <b>Run workflow</b>.
+        Your first snapshot will appear here a minute or two after it finishes.</div>`;
+    } else {
+      el.innerHTML = `<div class="msg error">Couldn't load the citation history (${err && err.message}).
+        Try reloading the page.</div>`;
+    }
+  });
+</script>
+</body>
+</html>
